@@ -16,3 +16,4 @@ logs/
 temp/bot.pid
 tools/
 github-login.cmd
+github-publish.cmd
