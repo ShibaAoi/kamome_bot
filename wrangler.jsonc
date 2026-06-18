@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kamome-menu",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-06-18",
+  "workers_dev": true,
+  "vars": {
+    "TIMEZONE": "Asia/Tokyo"
+  }
+}
