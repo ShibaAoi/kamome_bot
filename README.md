@@ -1,112 +1,106 @@
 # kamome_bot
 
-K3号館2階「フードコートかもめ」の日替わりメニューをDiscordで案内するBotです。メニューは全Discordサーバーで共通管理され、指定チャンネルへの毎日投稿にも対応します。
+K3号館2階「フードコートかもめ」の日替わりメニューをDiscordで案内するBotです。
 
-## Cloudflare Workers版（常時起動不要）
+通常のコマンド処理はCloudflare Workersで必要な時だけ動作します。画像OCRだけは利用者のWindows PCで実行し、認識候補をCloudflare D1へ返します。
 
-`worker/` には、Discordコマンドが届いた時だけ動くCloudflare Workers版があります。現在対応しているのは `/menu` と日付指定です。PCを起動しておく必要はありません。
+## 構成
 
-1. Cloudflareへログインします。
+- `worker/`: Discord Interactionを受けるCloudflare Worker
+- `migrations/`: メニュー、候補、バックアップ、OCRジョブ用D1スキーマ
+- `local-ocr/`: `tesseract.js` による日本語OCRエージェント
+- `menus/`: Workerへ組み込む初期メニュー
+- `scripts/`: Discordコマンド登録処理
+- `test/`: Workerと署名検証のテスト
 
-   ```powershell
-   npm.cmd exec wrangler login
-   ```
+公開中のWorker:
 
-2. Workerを配置します。
+```text
+https://kamome-menu.shiba-6d3.workers.dev
+```
 
-   ```powershell
-   npm.cmd run worker:deploy
-   ```
-
-3. Discord Developer Portalのアプリケーション画面から `PUBLIC KEY` を確認し、Workerへ登録します。
-
-   ```powershell
-   npm.cmd exec wrangler secret put DISCORD_PUBLIC_KEY
-   ```
-
-4. 配置後に表示される `https://kamome-menu.<subdomain>.workers.dev` を、Discord Developer Portalの `Interactions Endpoint URL` に設定します。Discordによる検証が成功したことを確認してください。
-
-5. Worker版のコマンドだけをグローバル登録します。この操作は既存のグローバルコマンド一覧を `/menu` だけに置き換えます。
-
-   ```powershell
-   npm.cmd run worker:commands
-   ```
-
-ローカル確認では `.dev.vars.example` を `.dev.vars` に複製し、Discordの公開鍵を設定して `npm.cmd run worker:dev` を実行します。BotトークンはWorkerへ登録しません。
-
-画像インポート、バックアップ、自動投稿は現在PC常駐版だけの機能です。Cloudflare Workersには永続的なローカルディスクがないため、これらの移行にはKVなどの保存先を追加する必要があります。
-
-## 必要なもの
-
-- Node.js 18以上（推奨: 20以上）
-- Discord Botアプリケーション
-
-依存パッケージは `discord.js`、`dotenv`、`node-cron` です。
-
-## セットアップ
-
-1. 依存パッケージをインストールします。
-
-   ```powershell
-   npm.cmd install
-   ```
-
-2. `.env.example` を `.env` に複製し、値を設定します。
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-3. Discord Developer PortalでBotをサーバーへ招待します。`bot` と `applications.commands` スコープ、および閲覧・メッセージ送信・ファイル添付権限が必要です。
-
-4. Botを起動します。
-
-   ```powershell
-   npm.cmd start
-   ```
-
-`GUILD_ID` を設定すると、そのサーバーだけへコマンドを即時登録します。空の場合はグローバル登録となり、Discordへの反映に時間がかかることがあります。
-
-## 環境変数
-
-- `DISCORD_TOKEN`: Botトークン（必須）
-- `CLIENT_ID`: DiscordアプリケーションID（必須）
-- `GUILD_ID`: 開発中にコマンドを登録するサーバーID（任意）
-- `DEVELOPER_USER_IDS`: 管理コマンドを使えるユーザーID。カンマ区切り
-- `MENU_CHANNEL_IDS`: 毎日投稿するチャンネルID。カンマ区切り
-- `TIMEZONE`: タイムゾーン。既定値は `Asia/Tokyo`
-- `DAILY_POST_TIME`: 毎日投稿時刻。`HH:MM` 形式
-- `IMPORT_EXPIRE_MINUTES`: 画像インポート候補の有効時間
-- `OCR_PROVIDER`: 現在は `mock` のみ
-- `MAX_IMAGE_SIZE_MB`: 画像サイズ上限。既定値は10MB
-
-`.env` はGit管理対象外です。BotトークンやAPIキーをソースへ書かないでください。
-
-## コマンド
+## Discordコマンド
 
 - `/menu`: 今日のメニューを表示
-- `/menu date:6/18`: 指定日のメニューを表示（完全な `YYYY-MM-DD` も可）
-- `/menu-import`: 画像から一時的なJSON候補を生成（開発者のみ）
-- `/menu-import-preview`: 候補をJSONファイルで確認（開発者のみ）
-- `/menu-import-confirm`: 候補を正式保存（開発者のみ）
-- `/menu-import-cancel`: 候補を破棄（開発者のみ）
+- `/menu date:6/19`: 指定日のメニューを表示
+- `/menu-import`: 画像または手入力から一時候補を作成（開発者のみ）
+- `/menu-import-preview`: 候補またはOCR状態を確認（開発者のみ）
+- `/menu-import-confirm`: 候補を正式保存し、既存データをD1へバックアップ（開発者のみ）
+- `/menu-import-cancel`: 候補またはOCRジョブを破棄（開発者のみ）
 
-正式保存時、既存データは `menus/backups/` に退避されます。一時画像と候補は確定・破棄・期限切れ時に削除されます。
+手入力では `manual_data` を次の形式で指定します。複数日は改行します。
 
-## OCRについて
-
-初期実装の `OCR_PROVIDER=mock` は画像認識を行わず、空の候補を生成します。処理の動作確認では、環境変数 `MOCK_OCR_TEXT` に次の形式のテキストを設定すると候補を作れます。
-
-```txt
-6/18 | サムギョプサル丼 | ジャージャー麺
+```text
+6/19 | 鶏肉の香草焼き定食 | 塩たんめん
 6/20 | 休業
 ```
 
-実画像を認識する運用には、利用するOCRサービスの決定、API認証情報、`src/services/ocrService.js` のプロバイダー実装が別途必要です。候補はOCR方式に関係なく、プレビューして明示的に確定するまで `menus/` へ保存されません。
+画像を指定した場合はD1へOCR待ちジョブが作られます。PCのOCRエージェントが処理した後、必ずプレビューしてから確定してください。
 
-## 検証
+## ローカルOCR
+
+初回セットアップ:
+
+1. `.env.example` を `.env` に複製します。
+2. `WORKER_URL` と `LOCAL_OCR_TOKEN` を設定します。
+3. 依存パッケージを導入します。
 
 ```powershell
-npm.cmd test
+npm.cmd install
+```
+
+OCRエージェントを手動起動:
+
+```powershell
+npm.cmd run ocr:start
+```
+
+または [install-ocr-autostart.cmd](install-ocr-autostart.cmd) を実行すると、Windowsログイン時に非表示で起動します。停止は `stop-ocr-agent.cmd`、自動起動解除は `remove-ocr-autostart.cmd` です。
+
+日本語認識データは初回OCR時に `temp/tesseract-cache/` へ取得されます。OCR処理にWorkers AIや有料OCR APIは使用しません。PCがOFFの場合、画像ジョブは処理待ちとなります。
+
+## Cloudflare
+
+必要な設定:
+
+- Worker変数: `TIMEZONE`、`DEVELOPER_USER_IDS`、`IMPORT_EXPIRE_MINUTES`
+- Worker秘密値: `DISCORD_PUBLIC_KEY`、`LOCAL_OCR_TOKEN`
+- D1 binding: `DB`
+
+D1マイグレーション:
+
+```powershell
+npm.cmd exec -- wrangler d1 migrations apply kamome-menu-db --remote
+```
+
+Workerの検証と配置:
+
+```powershell
+npm.cmd run worker:check
+npm.cmd run worker:deploy
+```
+
+Discordコマンドの登録:
+
+```powershell
+npm.cmd run worker:commands
+```
+
+## セキュリティ
+
+以下はGit管理対象外です。
+
+- `.env`
+- `.dev.vars`
+- CloudflareとGitHubのローカル認証情報
+- OCRキャッシュ、PID、ログ
+
+Discord Botトークン、公開鍵、`LOCAL_OCR_TOKEN` をGitHubへ登録しないでください。管理コマンドはWorker側でもDiscordユーザーIDを確認します。
+
+## テスト
+
+```powershell
 npm.cmd run check
+npm.cmd test
+npm.cmd run worker:check
 ```

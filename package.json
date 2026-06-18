@@ -1,25 +1,24 @@
 {
   "name": "kamome_bot",
   "version": "1.0.0",
-  "description": "フードコートかもめの日替わりメニューを案内するDiscord Bot",
-  "main": "src/index.js",
+  "description": "Cloudflare Workersで動くフードコートかもめのDiscord Bot",
+  "main": "local-ocr/agent.js",
   "scripts": {
-    "start": "node src/index.js",
-    "check": "node --check src/index.js",
+    "check": "node --check local-ocr/agent.js",
     "test": "node --test",
     "worker:dev": "wrangler dev",
     "worker:deploy": "wrangler deploy",
     "worker:check": "wrangler deploy --dry-run --outdir .wrangler-dist",
-    "worker:commands": "node scripts/register-worker-commands.mjs"
+    "worker:commands": "node scripts/register-worker-commands.mjs",
+    "ocr:start": "node local-ocr/agent.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
-    "node-cron": "^4.4.1"
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"

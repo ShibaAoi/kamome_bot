@@ -5,6 +5,15 @@
   "compatibility_date": "2026-06-18",
   "workers_dev": true,
   "vars": {
-    "TIMEZONE": "Asia/Tokyo"
-  }
+    "TIMEZONE": "Asia/Tokyo",
+    "DEVELOPER_USER_IDS": "1100526193624743946",
+    "IMPORT_EXPIRE_MINUTES": "30"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kamome-menu-db",
+      "database_id": "5a09253f-7270-471b-abdf-f8c08d6a66a2"
+    }
+  ]
 }

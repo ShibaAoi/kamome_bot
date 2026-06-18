@@ -1,11 +1,5 @@
 node_modules/
 .env
-reset_token.txt
-reset_token.md
-temp/imports/*
-!temp/imports/.gitkeep
-menus/backups/*
-!menus/backups/.gitkeep
 npm-debug.log*
 .npm-cache/
 .dev.vars
@@ -13,7 +7,5 @@ npm-debug.log*
 .wrangler-dist/
 .wrangler-config/
 logs/
-temp/bot.pid
-tools/
-github-login.cmd
-github-publish.cmd
+temp/ocr-agent.pid
+temp/tesseract-cache/
