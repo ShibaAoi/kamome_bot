@@ -27,6 +27,7 @@ https://kamome-menu.shiba-6d3.workers.dev
 - `/menu-import-preview`: 候補またはOCR状態を確認（開発者のみ）
 - `/menu-import-confirm`: 候補を正式保存し、既存データをD1へバックアップ（開発者のみ）
 - `/menu-import-cancel`: 候補またはOCRジョブを破棄（開発者のみ）
+- `/menu-schedule`: 毎日の自動投稿を設定・確認・停止
 
 手入力では `manual_data` を次の形式で指定します。複数日は改行します。
 
@@ -59,12 +60,27 @@ npm.cmd run ocr:start
 
 日本語認識データは初回OCR時に `temp/tesseract-cache/` へ取得されます。OCR処理にWorkers AIや有料OCR APIは使用しません。PCがOFFの場合、画像ジョブは処理待ちとなります。
 
+## 定時投稿
+
+`/menu-schedule` でサーバーごとに毎日の自動投稿を設定できます。
+
+```text
+/menu-schedule set time:08:00
+/menu-schedule set time:08:00 channel:#menu
+/menu-schedule status
+/menu-schedule off
+```
+
+`set` で `channel` を省略した場合は、コマンドを実行したチャンネルへ投稿します。投稿内容は当日の `/menu` と同じです。
+
+定時投稿にはCloudflare Worker側の秘密値 `DISCORD_TOKEN` が必要です。Discord Botの招待権限には `View Channel` と `Send Messages` を含めてください。
+
 ## Cloudflare
 
 必要な設定:
 
 - Worker変数: `TIMEZONE`、`DEVELOPER_USER_IDS`、`IMPORT_EXPIRE_MINUTES`
-- Worker秘密値: `DISCORD_PUBLIC_KEY`、`LOCAL_OCR_TOKEN`
+- Worker秘密値: `DISCORD_PUBLIC_KEY`、`LOCAL_OCR_TOKEN`、`DISCORD_TOKEN`
 - D1 binding: `DB`
 
 D1マイグレーション:

@@ -42,6 +42,32 @@ const commands = [
     type: 1,
     options: [{ name: 'import_id', description: 'インポートID', type: 3, required: true }],
   },
+  {
+    name: 'menu-schedule',
+    description: '毎日のメニュー自動投稿を設定します',
+    type: 1,
+    options: [
+      {
+        name: 'set',
+        description: '毎日の投稿時刻と投稿先を設定します',
+        type: 1,
+        options: [
+          { name: 'time', description: '投稿時刻（HH:mm、例: 08:00）', type: 3, required: true },
+          { name: 'channel', description: '投稿先チャンネル（省略時は現在のチャンネル）', type: 7, required: false },
+        ],
+      },
+      {
+        name: 'status',
+        description: '現在の自動投稿設定を確認します',
+        type: 1,
+      },
+      {
+        name: 'off',
+        description: 'このサーバーの自動投稿を停止します',
+        type: 1,
+      },
+    ],
+  },
 ];
 
 const response = await fetch(`https://discord.com/api/v10/applications/${CLIENT_ID}/commands`, {

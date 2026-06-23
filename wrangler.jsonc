@@ -9,6 +9,11 @@
     "DEVELOPER_USER_IDS": "1100526193624743946",
     "IMPORT_EXPIRE_MINUTES": "30"
   },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
   "d1_databases": [
     {
       "binding": "DB",

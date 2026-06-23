@@ -3,11 +3,17 @@ import {
   claimOcrJob,
   completeOcrJob,
   confirmImport,
+  disableMenuSchedule,
   enqueueOcrJob,
   failOcrJob,
+  listDueMenuSchedules,
   loadImport,
+  loadMenuSchedule,
   loadMonth,
   loadOcrJob,
+  markMenuScheduleError,
+  markMenuSchedulePosted,
+  saveMenuSchedule,
   saveImport,
 } from './db.mjs';
 
@@ -19,6 +25,7 @@ const EPHEMERAL = 64;
 const DEFAULT_LOCATION = 'K3号館2階 フードコートかもめ';
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const SCHEDULE_TIMEZONE = 'Asia/Tokyo';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
@@ -53,6 +60,24 @@ function zonedToday(timezone = 'Asia/Tokyo', now = new Date()) {
   }).formatToParts(now);
   const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function zonedDateTime(timezone = SCHEDULE_TIMEZONE, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    time: `${values.hour}:${values.minute}`,
+  };
 }
 
 function isRealDate(value) {
@@ -153,6 +178,21 @@ function isDeveloper(interaction, env) {
 
 function optionsOf(interaction) {
   return Object.fromEntries((interaction.data?.options || []).map((option) => [option.name, option.value]));
+}
+
+function subcommandOf(interaction) {
+  const option = interaction.data?.options?.[0];
+  if (!option || option.type !== 1) return { name: null, options: {} };
+  return {
+    name: option.name,
+    options: Object.fromEntries((option.options || []).map((item) => [item.name, item.value])),
+  };
+}
+
+function validatePostTime(value) {
+  const time = String(value || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error('time は HH:mm 形式で指定してください。例: 08:00');
+  return time;
 }
 
 function validateAttachment(attachment) {
@@ -260,6 +300,78 @@ async function handleCancel(interaction, env, now) {
   return message('インポート候補を破棄しました。', true);
 }
 
+async function handleSchedule(interaction, env, now) {
+  if (!interaction.guild_id) return message('このコマンドはサーバー内で使用してください。', true);
+  if (!env.DB) throw new Error('Cloudflare D1 is not configured.');
+  const { name, options } = subcommandOf(interaction);
+  const guildId = interaction.guild_id;
+  const updatedBy = userId(interaction);
+  const updatedAt = now.getTime();
+
+  if (name === 'set') {
+    const postTime = validatePostTime(options.time);
+    const channelId = String(options.channel || interaction.channel_id || '').trim();
+    if (!channelId) throw new Error('投稿先チャンネルを取得できませんでした。channel を指定してください。');
+    await saveMenuSchedule(env, {
+      guildId,
+      channelId,
+      postTime,
+      timezone: SCHEDULE_TIMEZONE,
+      updatedBy,
+      updatedAt,
+    });
+    return message(`毎日 ${postTime} に <#${channelId}> へ当日のメニューを投稿します。`, true);
+  }
+
+  if (name === 'status') {
+    const schedule = await loadMenuSchedule(env, guildId);
+    if (!schedule) return message('このサーバーには定時投稿が設定されていません。', true);
+    const state = schedule.enabled ? 'ON' : 'OFF';
+    const lastPost = schedule.lastPostDate ? `\nlast_post: ${schedule.lastPostDate}` : '';
+    const lastError = schedule.lastError ? `\nlast_error: ${schedule.lastError}` : '';
+    return message(`定時投稿: ${state}\n時刻: ${schedule.postTime}\n投稿先: <#${schedule.channelId}>${lastPost}${lastError}`, true);
+  }
+
+  if (name === 'off') {
+    await disableMenuSchedule(env, guildId, updatedBy, updatedAt);
+    return message('このサーバーの定時投稿をOFFにしました。', true);
+  }
+
+  return message('未対応のサブコマンドです。', true);
+}
+
+async function postDiscordMessage(channelId, content, token, fetcher = fetch) {
+  const response = await fetcher(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bot ${token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ content }),
+  });
+  if (!response.ok) throw new Error(`Discord post failed (${response.status}): ${await response.text()}`);
+}
+
+export async function handleScheduledMenus(env, now = new Date(), fetcher = fetch) {
+  if (!env.DB || !env.DISCORD_TOKEN) return { checked: 0, posted: 0, failed: 0 };
+  const { date, time } = zonedDateTime(SCHEDULE_TIMEZONE, now);
+  const schedules = await listDueMenuSchedules(env, time, date);
+  let posted = 0;
+  let failed = 0;
+  for (const schedule of schedules) {
+    try {
+      const content = await formatMenu(env, date, date);
+      await postDiscordMessage(schedule.channelId, content, env.DISCORD_TOKEN, fetcher);
+      await markMenuSchedulePosted(env, schedule.guildId, date, now.getTime());
+      posted += 1;
+    } catch (error) {
+      failed += 1;
+      await markMenuScheduleError(env, schedule.guildId, error.message || 'scheduled post failed', now.getTime());
+    }
+  }
+  return { checked: schedules.length, posted, failed };
+}
+
 function authorizedOcrAgent(request, env) {
   const expected = env.LOCAL_OCR_TOKEN;
   return Boolean(expected) && request.headers.get('authorization') === `Bearer ${expected}`;
@@ -310,6 +422,7 @@ export async function handleInteraction(interaction, env, now = new Date()) {
   if (interaction.type !== INTERACTION_COMMAND) return message('未対応の操作です。', true);
   try {
     if (interaction.data?.name === 'menu') return await handleMenu(interaction, env, now);
+    if (interaction.data?.name === 'menu-schedule') return await handleSchedule(interaction, env, now);
     if (!['menu-import', 'menu-import-preview', 'menu-import-confirm', 'menu-import-cancel'].includes(interaction.data?.name)) return message('未対応のコマンドです。', true);
     if (!isDeveloper(interaction, env)) return message('このコマンドは開発者のみ使用できます。', true);
     if (!env.DB) throw new Error('Cloudflare D1が設定されていません。');
@@ -323,6 +436,10 @@ export async function handleInteraction(interaction, env, now = new Date()) {
 }
 
 export default {
+  async scheduled(_event, env) {
+    await handleScheduledMenus(env);
+  },
+
   async fetch(request, env) {
     const pathname = new URL(request.url).pathname;
     if (pathname.startsWith('/ocr/')) return handleOcrApi(request, env, pathname);
