@@ -1,9 +1,48 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { formatMenu, handleInteraction, parseManualData, parseMenuDate, parseOcrText, verifyDiscordRequest } from '../worker/index.mjs';
+import worker, { formatMenu, handleInteraction, parseManualData, parseMenuDate, verifyDiscordRequest } from '../worker/index.mjs';
 
 function toHex(bytes) {
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function createMenuDb() {
+  const months = new Map();
+  const backups = [];
+  return {
+    months,
+    backups,
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      return {
+        bind(...values) {
+          return {
+            async first() {
+              if (normalized.startsWith('SELECT data_json FROM menu_months')) {
+                const month = months.get(values[0]);
+                return month ? { data_json: JSON.stringify(month) } : null;
+              }
+              throw new Error(`Unhandled first SQL: ${normalized}`);
+            },
+            async run() {
+              if (normalized.startsWith('INSERT INTO menu_backups')) {
+                backups.push({ month: values[0], data: JSON.parse(values[1]), createdAt: values[2] });
+                return { meta: { changes: 1 } };
+              }
+              if (normalized.startsWith('INSERT INTO menu_months')) {
+                months.set(values[0], JSON.parse(values[1]));
+                return { meta: { changes: 1 } };
+              }
+              throw new Error(`Unhandled run SQL: ${normalized}`);
+            },
+          };
+        },
+      };
+    },
+    async batch(statements) {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
+  };
 }
 
 test('Worker版の日付指定とメニュー表示', async () => {
@@ -25,25 +64,50 @@ test('手入力メニューを候補形式へ変換する', () => {
   });
 });
 
-test('日本語OCRテキストを候補形式へ変換する', () => {
-  assert.deepEqual(parseOcrText('6月19日 A: 鶏肉の香草焼き定食 B: 塩たんめん\n6月20日 休業', '2026-06'), {
-    '2026-06-19': { a: '鶏肉の香草焼き定食', b: '塩たんめん' },
-    '2026-06-20': { closed: true },
-  });
-});
-
-test('改行を含むOCRテキストを候補形式へ変換する', () => {
-  assert.deepEqual(parseOcrText('19日(金)\n日替わりA 鶏肉の香草焼き定食\n日替わりB 塩たんめん\n20日(土)\n休業', '2026-06'), {
-    '2026-06-19': { a: '鶏肉の香草焼き定食', b: '塩たんめん' },
-    '2026-06-20': { closed: true },
-  });
+test('JSONファイルからメニューを直接保存する', async () => {
+  const DB = createMenuDb();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    month: '2026-07',
+    location: 'K3号館2階 フードコートかもめ',
+    menus: {
+      '2026-07-01': { a: 'A定食', b: 'B麺' },
+      '2026-07-02': { closed: true },
+    },
+  }), { status: 200 });
+  try {
+    const response = await handleInteraction({
+      type: 2,
+      user: { id: '1100526193624743946' },
+      data: {
+        name: 'menu-import',
+        options: [
+          { name: 'month', value: '2026-07' },
+          { name: 'json', value: 'attachment-1' },
+        ],
+        resolved: {
+          attachments: {
+            'attachment-1': {
+              filename: '2026-07.menu-preview.json',
+              size: 1024,
+              url: 'https://cdn.example.test/menu.json',
+            },
+          },
+        },
+      },
+    }, { DB, DEVELOPER_USER_IDS: '1100526193624743946' }, new Date('2026-07-03T00:00:00Z'));
+    assert.match(response.data.content, /保存しました/);
+    assert.deepEqual(DB.months.get('2026-07').menus['2026-07-01'], { a: 'A定食', b: 'B麺' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('管理コマンドは開発者以外を拒否する', async () => {
   const response = await handleInteraction({
     type: 2,
     user: { id: 'not-developer' },
-    data: { name: 'menu-import-preview', options: [{ name: 'import_id', value: 'x' }] },
+    data: { name: 'menu-import', options: [{ name: 'month', value: '2026-07' }] },
   }, { DEVELOPER_USER_IDS: '1100526193624743946' });
   assert.match(response.data.content, /開発者のみ/);
   assert.equal(response.data.flags, 64);

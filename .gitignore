@@ -7,8 +7,7 @@ npm-debug.log*
 .wrangler-dist/
 .wrangler-config/
 logs/
-temp/ocr-agent.pid
-temp/tesseract-cache/
+temp/
 kamome_obsidian/kamome/.obsidian/appearance.json
 kamome_obsidian/kamome/.obsidian/core-plugins.json
 kamome_obsidian/kamome/.obsidian/app.json

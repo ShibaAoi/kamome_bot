@@ -15,32 +15,13 @@ const commands = [
   },
   {
     name: 'menu-import',
-    description: 'メニュー候補を生成します（開発者専用）',
+    description: 'JSONファイルからメニューを直接保存します（開発者専用）',
     type: 1,
     options: [
       { name: 'month', description: '対象年月（YYYY-MM）', type: 3, required: true },
-      { name: 'image', description: 'メニュー画像（OCR設定後に利用可能）', type: 11, required: false },
-      { name: 'manual_data', description: '例: 6/19 | Aメニュー | Bメニュー（改行で複数日）', type: 3, required: false },
+      { name: 'json', description: 'Codexで生成したメニューJSONファイル', type: 11, required: true },
       { name: 'location', description: '食堂名', type: 3, required: false },
     ],
-  },
-  {
-    name: 'menu-import-preview',
-    description: '生成したメニュー候補を確認します（開発者専用）',
-    type: 1,
-    options: [{ name: 'import_id', description: 'インポートID', type: 3, required: true }],
-  },
-  {
-    name: 'menu-import-confirm',
-    description: '確認済みのメニュー候補を保存します（開発者専用）',
-    type: 1,
-    options: [{ name: 'import_id', description: 'インポートID', type: 3, required: true }],
-  },
-  {
-    name: 'menu-import-cancel',
-    description: '生成したメニュー候補を破棄します（開発者専用）',
-    type: 1,
-    options: [{ name: 'import_id', description: 'インポートID', type: 3, required: true }],
   },
   {
     name: 'menu-schedule',

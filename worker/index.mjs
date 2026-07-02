@@ -1,20 +1,12 @@
 import {
-  cancelImport,
-  claimOcrJob,
-  completeOcrJob,
-  confirmImport,
   disableMenuSchedule,
-  enqueueOcrJob,
-  failOcrJob,
   listDueMenuSchedules,
-  loadImport,
   loadMenuSchedule,
   loadMonth,
-  loadOcrJob,
   markMenuScheduleError,
   markMenuSchedulePosted,
   saveMenuSchedule,
-  saveImport,
+  saveMonth,
 } from './db.mjs';
 
 const INTERACTION_PING = 1;
@@ -23,8 +15,7 @@ const RESPONSE_PONG = 1;
 const RESPONSE_MESSAGE = 4;
 const EPHEMERAL = 64;
 const DEFAULT_LOCATION = 'K3号館2階 フードコートかもめ';
-const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_JSON_BYTES = 256 * 1024;
 const SCHEDULE_TIMEZONE = 'Asia/Tokyo';
 
 function json(data, status = 200) {
@@ -127,73 +118,6 @@ export function parseManualData(text, month) {
   return menus;
 }
 
-export function parseOcrText(text, month) {
-  assertMonth(month);
-  const normalized = String(text || '')
-    .replace(/[｜]/g, '|')
-    .replace(/[：]/g, ':')
-    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
-    .replace(/\u3000/g, ' ');
-  const converted = [];
-  const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const dateFromLine = (line) => {
-    const fullDate = /(?:^|\s)(?:(\d{4})[\-/年])?(\d{1,2})[\-/月](\d{1,2})(?:日)?/.exec(line);
-    if (fullDate) {
-      return {
-        match: fullDate,
-        dateText: `${fullDate[1] ? `${fullDate[1]}/` : ''}${fullDate[2]}/${fullDate[3]}`,
-        remainderStart: fullDate.index + fullDate[0].length,
-      };
-    }
-    const dayOnly = /^(?:\D{0,4})?(\d{1,2})\s*(?:日|\(|（|[月火水木金土])/.exec(line);
-    if (!dayOnly) return null;
-    return {
-      match: dayOnly,
-      dateText: `${Number(month.slice(5, 7))}/${dayOnly[1]}`,
-      remainderStart: dayOnly.index + dayOnly[0].length,
-    };
-  };
-  const cleanMenuText = (value) => String(value || '')
-    .replace(/^[\s:|・･、,，)）\]】]+/, '')
-    .replace(/^[（(]\s*[月火水木金土日]\s*[)）]\s*/, '')
-    .replace(/^(?:月|火|水|木|金|土|日)曜(?:日)?\s*/, '')
-    .replace(/^(?:日替わり|日替り)?\s*[ABＡＢ]\s*(?:ランチ|メニュー|定食|麺)?\s*[:：・･]?\s*/i, '')
-    .trim();
-  const parseChunk = (dateText, chunk) => {
-    const rawJoined = chunk.map((value) => String(value || '')
-      .replace(/^[\s:|・･、,，)）\]】]+/, '')
-      .replace(/^[（(]\s*[月火水木金土日]\s*[)）]\s*/, '')
-      .replace(/^(?:月|火|水|木|金|土|日)曜(?:日)?\s*/, '')
-      .trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-    if (/^(closed|休み|お休み|休業)/i.test(rawJoined)) return `${dateText} | 休業`;
-    const labeled = /(?:日替わり|日替り)?\s*[AＡ]\s*[:：・･]?\s*(.+?)\s+(?:日替わり|日替り)?\s*[BＢ]\s*[:：・･]?\s*(.+)$/i.exec(rawJoined);
-    if (labeled) return `${dateText} | ${labeled[1].trim()} | ${labeled[2].trim()}`;
-    const compact = chunk.map(cleanMenuText).filter((line) => line && !/^(日替わり|日替り|メニュー|ランチ|A|B|Ａ|Ｂ)$/i.test(line));
-    const joined = compact.join(' ').replace(/\s+/g, ' ').trim();
-    if (!joined) return null;
-    if (/^(closed|休み|お休み|休業)/i.test(joined)) return `${dateText} | 休業`;
-    const columns = joined.split(/\s*(?:\||\t| {2,})\s*/).filter(Boolean);
-    if (columns.length >= 2) return `${dateText} | ${columns[0]} | ${columns.slice(1).join(' ')}`;
-    if (compact.length >= 2) return `${dateText} | ${compact[0]} | ${compact.slice(1).join(' ')}`;
-    return null;
-  };
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (!line) continue;
-    const found = dateFromLine(line);
-    if (!found) continue;
-    const chunk = [line.slice(found.remainderStart)];
-    for (let offset = 1; offset <= 3 && index + offset < lines.length; offset += 1) {
-      if (dateFromLine(lines[index + offset])) break;
-      chunk.push(lines[index + offset]);
-    }
-    const parsed = parseChunk(found.dateText, chunk);
-    if (parsed) converted.push(parsed);
-  }
-  if (!converted.length) throw new Error('OCR結果からメニュー行を抽出できませんでした。manual_data を利用してください。');
-  return parseManualData(converted.join('\n'), month);
-}
-
 function validateCandidate(candidate) {
   assertMonth(candidate.month);
   if (!candidate.location?.trim()) throw new Error('場所が未設定です。');
@@ -233,21 +157,6 @@ function validatePostTime(value) {
   return time;
 }
 
-function validateAttachment(attachment) {
-  if (!attachment) return;
-  if (!ALLOWED_IMAGE_TYPES.has(String(attachment.content_type || '').toLowerCase())) throw new Error('jpg、jpeg、png、webp の画像を指定してください。');
-  if (!attachment.size || attachment.size > MAX_IMAGE_BYTES) throw new Error('画像サイズは10MB以下にしてください。');
-}
-
-function previewText(candidate) {
-  const lines = [`【${candidate.month} メニュー候補】`, `場所：${candidate.location}`, ''];
-  for (const [date, entry] of Object.entries(candidate.menus).sort(([a], [b]) => a.localeCompare(b))) {
-    lines.push(entry.closed ? `${date}：休業` : `${date}：A ${entry.a} / B ${entry.b}`);
-  }
-  const output = lines.join('\n');
-  return output.length <= 1900 ? output : `${output.slice(0, 1850)}\n…（以降省略）`;
-}
-
 export async function formatMenu(env, date, today) {
   const monthData = await loadMonth(env, date.slice(0, 7));
   const menu = monthData?.menus[date];
@@ -269,73 +178,28 @@ async function handleMenu(interaction, env, now) {
 async function handleImport(interaction, env, now) {
   const options = optionsOf(interaction);
   assertMonth(options.month);
-  const attachment = options.image ? interaction.data.resolved?.attachments?.[options.image] : null;
-  validateAttachment(attachment);
-  const createdAt = now.getTime();
-  const expiresAt = createdAt + Number(env.IMPORT_EXPIRE_MINUTES || 30) * 60_000;
-  if (!options.manual_data && attachment) {
-    const id = crypto.randomUUID();
-    await enqueueOcrJob(env, {
-      id,
-      attachmentUrl: attachment.url,
-      contentType: attachment.content_type,
-      originalFileName: attachment.filename,
-      month: options.month,
-      location: String(options.location || DEFAULT_LOCATION).trim(),
-      createdBy: userId(interaction),
-      createdAt,
-      expiresAt,
-    });
-    return message(`画像をローカルOCR待ちに登録しました。\nimport_id: \`${id}\`\nPCのOCRエージェントが処理後、\`/menu-import-preview\` で確認できます。`, true);
-  }
-  if (!options.manual_data) throw new Error('image または manual_data を指定してください。');
+  const attachment = options.json ? interaction.data.resolved?.attachments?.[options.json] : null;
+  if (!attachment) throw new Error('json ファイルを添付してください。');
+  if (attachment.size > MAX_JSON_BYTES) throw new Error('JSONファイルは256KB以下にしてください。');
+  const response = await fetch(attachment.url, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`JSONファイルを取得できませんでした (${response.status})。`);
+  const uploaded = JSON.parse(await response.text());
   const candidate = {
-    month: options.month,
-    location: String(options.location || DEFAULT_LOCATION).trim(),
+    month: uploaded.month || options.month,
+    location: String(uploaded.location || options.location || DEFAULT_LOCATION).trim(),
     source: {
-      type: attachment ? 'image_with_manual_text' : 'manual_text',
-      importedAt: now.toISOString(), uploadedBy: userId(interaction), originalFileName: attachment?.filename || null,
+      type: 'json_upload',
+      importedAt: now.toISOString(),
+      uploadedBy: userId(interaction),
+      originalFileName: attachment.filename,
     },
-    menus: parseManualData(options.manual_data, options.month),
+    menus: uploaded.menus,
   };
+  if (candidate.month !== options.month) throw new Error('コマンドのmonthとJSON内のmonthが一致しません。');
   validateCandidate(candidate);
-  const id = crypto.randomUUID();
-  await saveImport(env, {
-    id, candidate, createdBy: userId(interaction), originalFileName: attachment?.filename || null,
-    createdAt, expiresAt,
-  });
-  return message(`JSON候補を生成しました（${Object.keys(candidate.menus).length}日分）。\nimport_id: \`${id}\`\n\`/menu-import-preview\` で確認してください。`, true);
-}
-
-async function handlePreview(interaction, env, now) {
-  const id = optionsOf(interaction).import_id;
-  const record = await loadImport(env, id, now.getTime());
-  if (!record) {
-    const job = await loadOcrJob(env, id);
-    if (job?.status === 'queued') return message('画像はローカルOCRの処理待ちです。PCのOCRエージェントを起動してください。', true);
-    if (job?.status === 'processing') return message('ローカルOCRで画像を処理中です。少し待ってから再度確認してください。', true);
-    if (job?.status === 'failed') throw new Error(job.error || 'OCR処理に失敗しました。');
-    throw new Error('インポート候補が見つかりません。期限切れまたは処理済みです。');
-  }
-  return message(previewText(record.candidate), true);
-}
-
-async function handleConfirm(interaction, env, now) {
-  const record = await loadImport(env, optionsOf(interaction).import_id, now.getTime());
-  if (!record) throw new Error('インポート候補が見つかりません。期限切れまたは処理済みです。');
-  validateCandidate(record.candidate);
-  const result = await confirmImport(env, record, now.getTime());
-  const [year, month] = record.candidate.month.split('-').map(Number);
+  const result = await saveMonth(env, candidate, now.getTime());
+  const [year, month] = candidate.month.split('-').map(Number);
   return message(`${year}年${month}月のメニューデータを保存しました。\nすべてのサーバーで反映されます。\n${result.backupCreated ? 'バックアップもD1へ保存しました。' : '新規データとして保存しました。'}`, true);
-}
-
-async function handleCancel(interaction, env, now) {
-  const id = optionsOf(interaction).import_id;
-  const record = await loadImport(env, id, now.getTime());
-  const job = record ? null : await loadOcrJob(env, id);
-  if (!record && !job) throw new Error('インポート候補が見つかりません。期限切れまたは処理済みです。');
-  await cancelImport(env, id);
-  return message('インポート候補を破棄しました。', true);
 }
 
 async function handleSchedule(interaction, env, now) {
@@ -410,64 +274,16 @@ export async function handleScheduledMenus(env, now = new Date(), fetcher = fetc
   return { checked: schedules.length, posted, failed };
 }
 
-function authorizedOcrAgent(request, env) {
-  const expected = env.LOCAL_OCR_TOKEN;
-  return Boolean(expected) && request.headers.get('authorization') === `Bearer ${expected}`;
-}
-
-async function handleOcrApi(request, env, pathname) {
-  if (!authorizedOcrAgent(request, env)) return new Response('Unauthorized', { status: 401 });
-  if (request.method === 'POST' && pathname === '/ocr/jobs/claim') {
-    const job = await claimOcrJob(env);
-    return job ? json(job) : new Response(null, { status: 204 });
-  }
-  const match = /^\/ocr\/jobs\/([0-9a-f-]{36})\/(complete|fail)$/.exec(pathname);
-  if (!match || request.method !== 'POST') return new Response('Not Found', { status: 404 });
-  const [, id, action] = match;
-  const job = await env.DB.prepare('SELECT * FROM ocr_jobs WHERE id = ?').bind(id).first();
-  if (!job) return new Response('Job not found', { status: 404 });
-  const body = await request.json();
-  if (action === 'fail') {
-    await failOcrJob(env, id, body.error || 'ローカルOCR処理に失敗しました。');
-    return json({ ok: true });
-  }
-  const rawText = String(body.text || '').slice(0, 100_000);
-  try {
-    const candidate = {
-      month: job.month,
-      location: job.location,
-      source: {
-        type: 'local_ocr', importedAt: new Date().toISOString(), uploadedBy: job.created_by, originalFileName: job.original_file_name,
-      },
-      menus: parseOcrText(rawText, job.month),
-    };
-    validateCandidate(candidate);
-    await completeOcrJob(env, {
-      id: job.id,
-      createdBy: job.created_by,
-      originalFileName: job.original_file_name,
-      expiresAt: job.expires_at,
-    }, candidate, rawText);
-    return json({ ok: true, menuCount: Object.keys(candidate.menus).length });
-  } catch (error) {
-    await failOcrJob(env, id, error.message || 'OCR結果の解析に失敗しました。', Date.now(), rawText);
-    return json({ ok: false, error: error.message }, 422);
-  }
-}
-
 export async function handleInteraction(interaction, env, now = new Date()) {
   if (interaction.type === INTERACTION_PING) return { type: RESPONSE_PONG };
   if (interaction.type !== INTERACTION_COMMAND) return message('未対応の操作です。', true);
   try {
     if (interaction.data?.name === 'menu') return await handleMenu(interaction, env, now);
     if (interaction.data?.name === 'menu-schedule') return await handleSchedule(interaction, env, now);
-    if (!['menu-import', 'menu-import-preview', 'menu-import-confirm', 'menu-import-cancel'].includes(interaction.data?.name)) return message('未対応のコマンドです。', true);
+    if (interaction.data?.name !== 'menu-import') return message('未対応のコマンドです。', true);
     if (!isDeveloper(interaction, env)) return message('このコマンドは開発者のみ使用できます。', true);
     if (!env.DB) throw new Error('Cloudflare D1が設定されていません。');
-    if (interaction.data.name === 'menu-import') return await handleImport(interaction, env, now);
-    if (interaction.data.name === 'menu-import-preview') return await handlePreview(interaction, env, now);
-    if (interaction.data.name === 'menu-import-confirm') return await handleConfirm(interaction, env, now);
-    return await handleCancel(interaction, env, now);
+    return await handleImport(interaction, env, now);
   } catch (error) {
     return message(error instanceof Error ? error.message : '処理中にエラーが発生しました。', true);
   }
@@ -480,7 +296,6 @@ export default {
 
   async fetch(request, env) {
     const pathname = new URL(request.url).pathname;
-    if (pathname.startsWith('/ocr/')) return handleOcrApi(request, env, pathname);
     if (request.method === 'GET') return json({ ok: true, service: 'kamome-menu' });
     if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
     if (!env.DISCORD_PUBLIC_KEY) return new Response('DISCORD_PUBLIC_KEY is not configured.', { status: 500 });

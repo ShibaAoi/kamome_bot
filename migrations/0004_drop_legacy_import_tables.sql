@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS ocr_jobs;
+DROP TABLE IF EXISTS imports;
