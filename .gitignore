@@ -9,3 +9,10 @@ npm-debug.log*
 logs/
 temp/ocr-agent.pid
 temp/tesseract-cache/
+kamome_obsidian/kamome/.obsidian/appearance.json
+kamome_obsidian/kamome/.obsidian/core-plugins.json
+kamome_obsidian/kamome/.obsidian/app.json
+kamome_obsidian/kamome/.obsidian/graph.json
+kamome_obsidian/kamome/.obsidian/workspace.json
+kamome_obsidian/kamome/AGENTS.md
+kamome_obsidian/kamome/ようこそ.md
