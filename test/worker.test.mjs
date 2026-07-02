@@ -67,17 +67,27 @@ test('手入力メニューを候補形式へ変換する', () => {
 test('JSONファイルからメニューを直接保存する', async () => {
   const DB = createMenuDb();
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    month: '2026-07',
-    location: 'K3号館2階 フードコートかもめ',
-    menus: {
-      '2026-07-01': { a: 'A定食', b: 'B麺' },
-      '2026-07-02': { closed: true },
-    },
-  }), { status: 200 });
+  const updates = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('/webhooks/')) {
+      updates.push(JSON.parse(init.body));
+      return new Response('{}', { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      month: '2026-07',
+      location: 'K3号館2階 フードコートかもめ',
+      menus: {
+        '2026-07-01': { a: 'A定食', b: 'B麺' },
+        '2026-07-02': { closed: true },
+      },
+    }), { status: 200 });
+  };
   try {
+    const waits = [];
     const response = await handleInteraction({
       type: 2,
+      application_id: 'app-1',
+      token: 'interaction-token',
       user: { id: '1100526193624743946' },
       data: {
         name: 'menu-import',
@@ -95,8 +105,13 @@ test('JSONファイルからメニューを直接保存する', async () => {
           },
         },
       },
-    }, { DB, DEVELOPER_USER_IDS: '1100526193624743946' }, new Date('2026-07-03T00:00:00Z'));
-    assert.match(response.data.content, /保存しました/);
+    }, { DB, DEVELOPER_USER_IDS: '1100526193624743946' }, new Date('2026-07-03T00:00:00Z'), {
+      waitUntil(promise) { waits.push(promise); },
+    });
+    assert.equal(response.type, 5);
+    assert.equal(response.data.flags, 64);
+    await Promise.all(waits);
+    assert.match(updates[0].content, /保存しました/);
     assert.deepEqual(DB.months.get('2026-07').menus['2026-07-01'], { a: 'A定食', b: 'B麺' });
   } finally {
     globalThis.fetch = originalFetch;

@@ -13,6 +13,7 @@ const INTERACTION_PING = 1;
 const INTERACTION_COMMAND = 2;
 const RESPONSE_PONG = 1;
 const RESPONSE_MESSAGE = 4;
+const RESPONSE_DEFERRED_MESSAGE = 5;
 const EPHEMERAL = 64;
 const DEFAULT_LOCATION = 'K3号館2階 フードコートかもめ';
 const MAX_JSON_BYTES = 256 * 1024;
@@ -24,6 +25,10 @@ function json(data, status = 200) {
 
 function message(content, ephemeral = false) {
   return { type: RESPONSE_MESSAGE, data: { content, ...(ephemeral ? { flags: EPHEMERAL } : {}) } };
+}
+
+function deferredMessage(ephemeral = false) {
+  return { type: RESPONSE_DEFERRED_MESSAGE, data: { ...(ephemeral ? { flags: EPHEMERAL } : {}) } };
 }
 
 function hexToBytes(value) {
@@ -175,7 +180,7 @@ async function handleMenu(interaction, env, now) {
   return message(await formatMenu(env, date, today));
 }
 
-async function handleImport(interaction, env, now) {
+async function importJsonMenu(interaction, env, now) {
   const options = optionsOf(interaction);
   assertMonth(options.month);
   const attachment = options.json ? interaction.data.resolved?.attachments?.[options.json] : null;
@@ -199,7 +204,30 @@ async function handleImport(interaction, env, now) {
   validateCandidate(candidate);
   const result = await saveMonth(env, candidate, now.getTime());
   const [year, month] = candidate.month.split('-').map(Number);
-  return message(`${year}年${month}月のメニューデータを保存しました。\nすべてのサーバーで反映されます。\n${result.backupCreated ? 'バックアップもD1へ保存しました。' : '新規データとして保存しました。'}`, true);
+  return `${year}年${month}月のメニューデータを保存しました。\nすべてのサーバーで反映されます。\n${result.backupCreated ? 'バックアップもD1へ保存しました。' : '新規データとして保存しました。'}`;
+}
+
+async function updateOriginalInteraction(interaction, content, fetcher = fetch) {
+  const response = await fetcher(`https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!response.ok) throw new Error(`Discord応答更新に失敗しました (${response.status}): ${await response.text()}`);
+}
+
+async function handleImport(interaction, env, now, ctx) {
+  if (ctx?.waitUntil && interaction.application_id && interaction.token) {
+    ctx.waitUntil((async () => {
+      try {
+        await updateOriginalInteraction(interaction, await importJsonMenu(interaction, env, now));
+      } catch (error) {
+        await updateOriginalInteraction(interaction, error instanceof Error ? error.message : '処理中にエラーが発生しました。').catch(() => {});
+      }
+    })());
+    return deferredMessage(true);
+  }
+  return message(await importJsonMenu(interaction, env, now), true);
 }
 
 async function handleSchedule(interaction, env, now) {
@@ -274,7 +302,7 @@ export async function handleScheduledMenus(env, now = new Date(), fetcher = fetc
   return { checked: schedules.length, posted, failed };
 }
 
-export async function handleInteraction(interaction, env, now = new Date()) {
+export async function handleInteraction(interaction, env, now = new Date(), ctx = null) {
   if (interaction.type === INTERACTION_PING) return { type: RESPONSE_PONG };
   if (interaction.type !== INTERACTION_COMMAND) return message('未対応の操作です。', true);
   try {
@@ -283,7 +311,7 @@ export async function handleInteraction(interaction, env, now = new Date()) {
     if (interaction.data?.name !== 'menu-import') return message('未対応のコマンドです。', true);
     if (!isDeveloper(interaction, env)) return message('このコマンドは開発者のみ使用できます。', true);
     if (!env.DB) throw new Error('Cloudflare D1が設定されていません。');
-    return await handleImport(interaction, env, now);
+    return await handleImport(interaction, env, now, ctx);
   } catch (error) {
     return message(error instanceof Error ? error.message : '処理中にエラーが発生しました。', true);
   }
@@ -294,7 +322,7 @@ export default {
     await handleScheduledMenus(env);
   },
 
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname;
     if (request.method === 'GET') return json({ ok: true, service: 'kamome-menu' });
     if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
@@ -304,7 +332,7 @@ export default {
     const body = await request.arrayBuffer();
     if (!await verifyDiscordRequest({ publicKey: env.DISCORD_PUBLIC_KEY, signature, timestamp, body })) return new Response('Invalid request signature', { status: 401 });
     try {
-      return json(await handleInteraction(JSON.parse(new TextDecoder().decode(body)), env));
+      return json(await handleInteraction(JSON.parse(new TextDecoder().decode(body)), env, new Date(), ctx));
     } catch {
       return new Response('Invalid JSON', { status: 400 });
     }
