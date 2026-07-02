@@ -32,6 +32,13 @@ test('日本語OCRテキストを候補形式へ変換する', () => {
   });
 });
 
+test('改行を含むOCRテキストを候補形式へ変換する', () => {
+  assert.deepEqual(parseOcrText('19日(金)\n日替わりA 鶏肉の香草焼き定食\n日替わりB 塩たんめん\n20日(土)\n休業', '2026-06'), {
+    '2026-06-19': { a: '鶏肉の香草焼き定食', b: '塩たんめん' },
+    '2026-06-20': { closed: true },
+  });
+});
+
 test('管理コマンドは開発者以外を拒否する', async () => {
   const response = await handleInteraction({
     type: 2,

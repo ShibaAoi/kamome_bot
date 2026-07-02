@@ -118,7 +118,12 @@ export async function completeOcrJob(env, job, candidate, rawText, now = Date.no
   ]);
 }
 
-export async function failOcrJob(env, id, error, now = Date.now()) {
+export async function failOcrJob(env, id, error, now = Date.now(), rawText = null) {
+  if (rawText !== null) {
+    return env.DB.prepare(`
+      UPDATE ocr_jobs SET status = 'failed', error = ?, raw_text = ?, completed_at = ? WHERE id = ?
+    `).bind(String(error).slice(0, 1000), String(rawText).slice(0, 100_000), now, id).run();
+  }
   return env.DB.prepare(`
     UPDATE ocr_jobs SET status = 'failed', error = ?, completed_at = ? WHERE id = ?
   `).bind(String(error).slice(0, 1000), now, id).run();

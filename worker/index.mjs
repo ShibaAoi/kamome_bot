@@ -131,26 +131,64 @@ export function parseOcrText(text, month) {
   assertMonth(month);
   const normalized = String(text || '')
     .replace(/[｜]/g, '|')
-    .replace(/[：]/g, ':');
+    .replace(/[：]/g, ':')
+    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/\u3000/g, ' ');
   const converted = [];
-  for (const rawLine of normalized.split(/\r?\n/)) {
-    const line = rawLine.trim();
+  const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const dateFromLine = (line) => {
+    const fullDate = /(?:^|\s)(?:(\d{4})[\-/年])?(\d{1,2})[\-/月](\d{1,2})(?:日)?/.exec(line);
+    if (fullDate) {
+      return {
+        match: fullDate,
+        dateText: `${fullDate[1] ? `${fullDate[1]}/` : ''}${fullDate[2]}/${fullDate[3]}`,
+        remainderStart: fullDate.index + fullDate[0].length,
+      };
+    }
+    const dayOnly = /^(?:\D{0,4})?(\d{1,2})\s*(?:日|\(|（|[月火水木金土])/.exec(line);
+    if (!dayOnly) return null;
+    return {
+      match: dayOnly,
+      dateText: `${Number(month.slice(5, 7))}/${dayOnly[1]}`,
+      remainderStart: dayOnly.index + dayOnly[0].length,
+    };
+  };
+  const cleanMenuText = (value) => String(value || '')
+    .replace(/^[\s:|・･、,，)）\]】]+/, '')
+    .replace(/^[（(]\s*[月火水木金土日]\s*[)）]\s*/, '')
+    .replace(/^(?:月|火|水|木|金|土|日)曜(?:日)?\s*/, '')
+    .replace(/^(?:日替わり|日替り)?\s*[ABＡＢ]\s*(?:ランチ|メニュー|定食|麺)?\s*[:：・･]?\s*/i, '')
+    .trim();
+  const parseChunk = (dateText, chunk) => {
+    const rawJoined = chunk.map((value) => String(value || '')
+      .replace(/^[\s:|・･、,，)）\]】]+/, '')
+      .replace(/^[（(]\s*[月火水木金土日]\s*[)）]\s*/, '')
+      .replace(/^(?:月|火|水|木|金|土|日)曜(?:日)?\s*/, '')
+      .trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (/^(closed|休み|お休み|休業)/i.test(rawJoined)) return `${dateText} | 休業`;
+    const labeled = /(?:日替わり|日替り)?\s*[AＡ]\s*[:：・･]?\s*(.+?)\s+(?:日替わり|日替り)?\s*[BＢ]\s*[:：・･]?\s*(.+)$/i.exec(rawJoined);
+    if (labeled) return `${dateText} | ${labeled[1].trim()} | ${labeled[2].trim()}`;
+    const compact = chunk.map(cleanMenuText).filter((line) => line && !/^(日替わり|日替り|メニュー|ランチ|A|B|Ａ|Ｂ)$/i.test(line));
+    const joined = compact.join(' ').replace(/\s+/g, ' ').trim();
+    if (!joined) return null;
+    if (/^(closed|休み|お休み|休業)/i.test(joined)) return `${dateText} | 休業`;
+    const columns = joined.split(/\s*(?:\||\t| {2,})\s*/).filter(Boolean);
+    if (columns.length >= 2) return `${dateText} | ${columns[0]} | ${columns.slice(1).join(' ')}`;
+    if (compact.length >= 2) return `${dateText} | ${compact[0]} | ${compact.slice(1).join(' ')}`;
+    return null;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (!line) continue;
-    const dateMatch = /(?:^|\s)(?:(\d{4})[\-/年])?(\d{1,2})[\-/月](\d{1,2})(?:日)?/.exec(line);
-    if (!dateMatch) continue;
-    const dateText = `${dateMatch[1] ? `${dateMatch[1]}/` : ''}${dateMatch[2]}/${dateMatch[3]}`;
-    const remainder = line.slice(dateMatch.index + dateMatch[0].length).trim().replace(/^[:|\s]+/, '');
-    if (/^(closed|休み|お休み|休業)/i.test(remainder)) {
-      converted.push(`${dateText} | 休業`);
-      continue;
+    const found = dateFromLine(line);
+    if (!found) continue;
+    const chunk = [line.slice(found.remainderStart)];
+    for (let offset = 1; offset <= 3 && index + offset < lines.length; offset += 1) {
+      if (dateFromLine(lines[index + offset])) break;
+      chunk.push(lines[index + offset]);
     }
-    const labeled = /(?:日替わり)?A\s*[:：]\s*(.+?)\s+(?:日替わり)?B\s*[:：]\s*(.+)$/i.exec(remainder);
-    if (labeled) {
-      converted.push(`${dateText} | ${labeled[1].trim()} | ${labeled[2].trim()}`);
-      continue;
-    }
-    const columns = remainder.split(/\s*(?:\||\t| {2,})\s*/).filter(Boolean);
-    if (columns.length >= 2) converted.push(`${dateText} | ${columns[0]} | ${columns.slice(1).join(' ')}`);
+    const parsed = parseChunk(found.dateText, chunk);
+    if (parsed) converted.push(parsed);
   }
   if (!converted.length) throw new Error('OCR結果からメニュー行を抽出できませんでした。manual_data を利用してください。');
   return parseManualData(converted.join('\n'), month);
@@ -412,7 +450,7 @@ async function handleOcrApi(request, env, pathname) {
     }, candidate, rawText);
     return json({ ok: true, menuCount: Object.keys(candidate.menus).length });
   } catch (error) {
-    await failOcrJob(env, id, error.message || 'OCR結果の解析に失敗しました。');
+    await failOcrJob(env, id, error.message || 'OCR結果の解析に失敗しました。', Date.now(), rawText);
     return json({ ok: false, error: error.message }, 422);
   }
 }
